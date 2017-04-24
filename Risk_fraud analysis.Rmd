@@ -1,0 +1,169 @@
+---
+title: "Credit Fraud Analysis"
+author: "Tapas R. Mohanty"
+date: "27 January 2017"
+output: html_document
+---
+# required packages from local library into R.
+```{r setup, include=FALSE}
+rm(list=ls())
+library(magrittr)     # Data pipelines: %>% %T>% %<>%.
+library(unbalanced)   # Resampling using ubSMOTE.
+library(rpart)        # Model: decision tree.
+library(rattle)       # Draw fancyRpartPlot().
+library(rpart.plot)   # Draw fancyRpartPlot().
+library(randomForest) # Model: random forest.
+library(e1071)        # Model: support vector machine.
+library(nnet)         # Model: neural network.
+library(caret)        # Tune model hyper-parameters.
+library(ROCR)         # Use prediction() for evaluation.
+library(pROC)         # Use auc() for evaluation. 
+library(ggplot2)      # Visually evaluate performance.
+```
+
+##Accuracy, Precision, Recall, F-score
+
+```{r}
+evaluateModel <- function(actual, predicted) 
+{ 
+  # Calculate the confusion matrix
+  confusion <- table(actual, predicted, dnn=c("Actual", "Predicted"))
+  confusion %>% print()  # Else it will not print
+  
+  # Calculate the performance metrics
+  tp <- confusion[rownames(confusion) == 1, colnames(confusion) == 1]
+  fn <- confusion[rownames(confusion) == 1, colnames(confusion) == 0]
+  fp <- confusion[rownames(confusion) == 0, colnames(confusion) == 1]
+  tn <- confusion[rownames(confusion) == 0, colnames(confusion) == 0]
+  
+  accuracy <- (tp + tn) / (tp + fn + fp + tn)
+  precision <- tp / (tp + fp)
+  recall <- tp / (tp + fn)
+  # Harmonic mean of precision and recall
+  fscore <- 2 * (precision * recall) / (precision + recall)  
+  
+  # Construct the vector of performance metrics
+  metrics <- c("Accuracy" = accuracy,
+               "Precision" = precision,
+               "Recall" = recall,
+               "F-Score" = fscore)
+  
+  # Return the vector of performance metrics
+  return(metrics)
+}
+```
+
+##AUC and ROC charts
+
+```{r}
+rocChart <- function(pr, target)
+{
+  # Calculate the true positive and the false positive rates.
+  rates <- pr %>%
+    prediction(target) %>%     # prediction() is ROCR function
+    performance("tpr", "fpr")  # performance() is ROCR function
+  
+  # Calulcate the AUC.
+  auc <- pr %>%
+    prediction(target) %>%
+    performance("auc") %>%
+    attr("y.values") %>%
+    extract2(1)
+  
+  # Construct the plot.
+  pl <- data.frame(tpr=attr(rates, "y.values")[[1]], 
+                   fpr=attr(rates, "x.values")[[1]]) %>%
+    ggplot(aes(fpr, tpr)) +
+    geom_line() +
+    annotate("text", x=0.875, y=0.125, vjust=0,
+             label=paste("AUC =", round(100*auc, 2)), 
+             family="xkcd") +
+    xlab("False Positive Rate (1-Specificity)") +
+    ylab("True Positive Rate (Sensitivity)")
+
+    # Return the plot object.
+  return(pl)
+}
+```
+
+Load datasets
+
+```{r}
+dir()
+Credit_card<-read.csv("creditcard.csv", header=TRUE)
+head(Credit_card)
+str(Credit_card)
+```
+
+##Initialise random numbers for repeatable results
+##Partition the full dataset into two. Stratified sampling
+##Separate predictors and target
+
+```{r}
+set.seed(123456)
+trainInd<-createDataPartition(Credit_card$Class, p=0.7,list=FALSE)
+valid<- Credit_card[-trainInd,]
+```
+
+##Separate predictors and target
+
+```{r}
+X<-Credit_card[trainInd, -c(31)]    
+y<-as.factor(as.numeric(Credit_card[trainInd , 31]))
+```
+
+##Balance train dataset now
+
+```{r}
+balanced <- ubSMOTE(X = X, Y = y,
+                 perc.over=200, perc.under=800,
+                 k=3, verbose=TRUE) 
+balTrain <- cbind(balanced$X, class = balanced$Y)
+traindata <- balTrain
+```
+
+##checking the proportion of fraud
+
+```{r}
+table(Credit_card$Class)/nrow(Credit_card)
+table(traindata$class)/nrow(traindata)
+```
+
+##Decision tree model with rpart
+
+```{r}
+ctrl <- rpart.control(maxdepth=3)  # Max depth of tree
+system.time(
+    model.rp <- rpart(
+                      class ~ .,
+                      traindata,
+                      control=ctrl
+                      )
+          )
+model.rp
+fancyRpartPlot(model.rp)
+```
+
+##Make predictions for validation dataset
+
+```{r}
+predictions <- predict(model.rp, valid[, -c(31) ], type="prob")
+rpart_probability <- predictions[, 2]
+threshold <- 0.5
+rpart_prediction <- ifelse(rpart_probability > threshold, 1, 0)
+pred <- data.frame(cbind(actual=valid[, 31], rpart_prediction, rpart_probability))
+```
+
+# Evaluate decision-tree model.
+
+```{r}
+pred$actual <- as.numeric(pred$actual)-1
+metrics.rp <- evaluateModel(pred$actual,pred$rpart_prediction)
+```
+
+#ROC chart now
+
+```{r}
+rocChart(pr=pred$rpart_probability, target=pred$actual)
+```
+
